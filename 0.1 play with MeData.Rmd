@@ -1,0 +1,172 @@
+---
+title: "0.1 play with MeData"
+author: "TG"
+date: "2024-02-20"
+output: html_document
+---
+
+
+```{r}
+library(DarkDiv)
+library(tidyverse)
+library(vegan)
+library(plotrix)
+library(sjPlot)
+library(sjmisc)
+library(gridExtra)
+library(lme4)
+library(lmerTest)
+library(MuMIn)
+library(glmmTMB)
+library(DHARMa)
+library(ggeffects)
+
+select <- dplyr::select
+```
+
+
+```{r}
+
+load("Clean_Medata_lis.Rdata")
+
+```
+
+
+```{r}
+
+medata<-medata %>% select(1:23) # keep only metadate and abundances
+
+medata<-medata %>% group_by(across(1:22)) %>% summarise(amount = sum(sp.n)) %>% ungroup() # sum the individuals from the same species in each transect
+
+medata_wide<-spread(medata,species,amount,fill = 0) # convert to wide format
+
+```
+
+## calculate the dark diversity
+
+Estimate the dark diversity per transect
+ 
+```{r}
+
+index_list<-list() # to save the raw indication table and probabilities of each basin
+
+data_list<-list() # to save the dark diversity data
+
+threshold <-0.9 # the probability to belong to the dark diversity
+
+
+for (i in unique(medata_wide$Basin)) {
+ 
+   basin_data<-medata_wide %>% filter(Basin == i) # keep one basin 
+   
+   sp_matrix<-basin_data[,22:ncol(basin_data)] # create species matrix
+
+  # Remove species with that have no occurrence in the basin
+  
+    sp_matrix<-sp_matrix[,colSums(sp_matrix != 0) > 0] 
+  
+  # apply the dark diversity algorithm
+  
+     dd<-DarkDiv(sp_matrix,method = "Hypergeometric")  
+   
+     index_list[[i]]<-dd  # save raw dark diversity data
+  
+     dd_all_probs<-dd[["AllProbs"]]# get all species probabilities
+   
+     dd_all_probs<-as.data.frame(dd_all_probs)# convert from matrix to dataframe
+   
+  # unite with metadata
+  
+      
+   dd_all_probs<-cbind(basin_data[1:21],dd_all_probs)
+   
+  # convert to long format
+   
+   
+   dd_all_probs<-gather(dd_all_probs,"Species","Probability",22:ncol(dd_all_probs))
+   
+  # now I will add the actual occurrence of the species 
+   
+   dd_pool<-dd[["Pool"]]# in the pool data 1 = presence
+   
+   dd_pool<-as.data.frame(dd_pool)# convert from matrix to dataframe
+   
+   dd_pool<-cbind(basin_data[1:21],dd_pool)
+   
+   dd_pool<-gather(dd_pool,"Species","occurrence",22:ncol(dd_pool))
+   
+   dd_pool$occurrence<-ifelse(dd_pool$occurrence<1,0,dd_pool$occurrence)
+   
+   dd_probs<-left_join(dd_all_probs,dd_pool) 
+   
+   data_list[[i]]<-dd_probs # save to list
+}
+
+dd_data<-bind_rows(data_list) # unite all basins to 1 data frame
+```
+
+
+
+```{r}
+
+threshold_d <-0.9 # the probability to belong to the dark diversity
+threshold_t <-0.5 # the probability to belong to the transient species
+
+```
+
+
+```{r}
+
+# for the presence species determine if core or transient
+
+dd_data$Status<-ifelse(dd_data$occurrence ==1 & dd_data$Probability>=threshold_t,
+                       "Core",
+                       NA)
+
+dd_data$Status<-ifelse(dd_data$occurrence ==1 & dd_data$Probability<=threshold_t,
+                       "Transient",
+                       dd_data$Status)
+
+# for absence species determine if dark or not part of the community
+
+
+dd_data$Status<-ifelse(dd_data$occurrence ==0 & dd_data$Probability>=threshold_d,
+                       "Dark diversity",
+                       dd_data$Status)
+
+dd_data$Status<-ifelse(dd_data$occurrence ==0 & dd_data$Probability<=threshold_d,
+                       "Not part",
+                       dd_data$Status)
+
+# check that the condition want right
+
+dd_data %>% filter(occurrence ==0) %>% distinct(Status)
+dd_data %>% filter(occurrence ==1) %>% distinct(Status)
+
+# filter out the not part of the community portion
+
+dd_data<-dd_data %>%
+  filter(Status != "Not part") %>%
+  arrange(country,Basin,Site,trans)
+
+
+```
+
+exploration of bar-plot
+
+
+
+```{r}
+
+dd_sums<-dd_data %>% select(-Probability,-occurrence,-Species) 
+  
+dd_sums<-dd_sums %>% group_by(across(1:22)) %>% summarise(n=n())
+
+dd_sums<-spread(dd_sums,Status,n,fill = 0)
+
+```
+
+
+
+
+
